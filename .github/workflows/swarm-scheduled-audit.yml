@@ -1,0 +1,73 @@
+name: Swarm Scheduled Audit
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+concurrency:
+  group: swarm-scheduled-audit-\${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Collect open priority issues and recent workflow state
+        env:
+          GH_TOKEN: \${{ github.token }}
+          REPOSITORY: \${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh issue list --repo "$REPOSITORY" --state open --limit 100 --json number,title,labels,url,createdAt > open-issues.json
+          gh run list --repo "$REPOSITORY" --limit 30 --json name,status,conclusion,url,createdAt,headBranch > recent-runs.json
+          jq -n --slurpfile issues open-issues.json --slurpfile runs recent-runs.json '{
+            open_priority_issues: [$issues[0][] | select(any(.labels[]?.name; test("^(P0|P1|P2|P3)$"))) | {number,title,url,labels}],
+            failed_runs: [$runs[0][] | select(.conclusion == "failure") | {name,conclusion,url,createdAt,headBranch}],
+            in_progress_runs: [$runs[0][] | select(.status == "in_progress") | {name,url,headBranch}]
+          }' > audit.json
+          cat audit.json
+
+      - name: Create one consolidated audit issue when action is needed
+        env:
+          GH_TOKEN: \${{ github.token }}
+          REPOSITORY: \${{ github.repository }}
+        run: |
+          set -euo pipefail
+          P0_P1="$(jq '[.open_priority_issues[] | select(any(.labels[]?.name; . == "P0" or . == "P1"))] | length' audit.json)"
+          FAILURES="$(jq '.failed_runs | length' audit.json)"
+          if [ "$P0_P1" -eq 0 ] && [ "$FAILURES" -eq 0 ]; then
+            echo "No open P0/P1 issues or failed workflow runs detected."
+            exit 0
+          fi
+          EXISTING="$(gh issue list --repo "$REPOSITORY" --state open --label swarm-scheduled-audit --json number --jq '.[0].number // empty')"
+          BODY="$({
+            echo '## Six-hour swarm audit'
+            echo
+            echo "Repository: $REPOSITORY"
+            echo "Audit UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            echo '### Open P0-P3 issues and recent workflow failures'
+            echo '~~~json'
+            cat audit.json
+            echo '~~~'
+            echo
+            echo '### Required engineering checks'
+            echo '- Confirm Supabase RLS is enabled and ownership policies enforce auth.uid() = user_id where applicable.'
+            echo '- Confirm server-side authorization and tenant boundaries are tested.'
+            echo '- Confirm secrets are stored only in GitHub/Vercel/Supabase secret stores and are not committed.'
+            echo '- Confirm dependency, build, lint, and test checks are green.'
+            echo
+            echo 'This report is a signal for engineering review; it does not certify that security checks passed.'
+          })"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$REPOSITORY" --body "$BODY"
+          else
+            gh issue create --repo "$REPOSITORY" --title "[Swarm Audit] Priority or CI attention required" --label "swarm-scheduled-audit" --body "$BODY"
+          fi
