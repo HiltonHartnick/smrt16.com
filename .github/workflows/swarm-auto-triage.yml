@@ -2,7 +2,7 @@ name: Swarm Auto Triage
 
 on:
   workflow_run:
-    workflows: ["CI", "Build", "Next.js CI", "Vercel Preview"]
+    workflows: ["CI", "Build", "Next.js CI", "Vercel Preview", "HRIH ARIA Cloud Worker", "Validate HRIH ARIA Operator", "Validate HRIH static website", "OPUS Quality CI", "SMRT16 Edge CI", "Escrow Release", "AFROZONE Web CI", "HRIH AI Studio CI", "Cloud Studio source build", "Deploy HRIH AI Studio inference to Modal", "Next.js AI Studio build and preview deploy", "Bounded Build Recovery", "Investment Desk CI", "Alexandria CI", "HRIH ARIA Growth Engine CI", "Creator Intelligence CI", "FORGE Platform CI", "SIGNAL Platform CI"]
     types: [completed]
   workflow_dispatch:
     inputs:
