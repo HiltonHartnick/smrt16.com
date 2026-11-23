@@ -41,7 +41,7 @@ jobs:
       - name: Checkout failing commit for read-only inspection
         uses: actions/checkout@v4
         with:
-          ref: \${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: \${{ steps.source.outputs.commit_sha }}
           persist-credentials: false
           fetch-depth: 1
 
@@ -116,7 +116,7 @@ jobs:
           if [ -n "$EXISTING" ]; then
             gh issue comment "$EXISTING" --repo "$REPOSITORY" --body "$BODY"
           else
-            gh issue create --repo "$REPOSITORY" --title "$TITLE" --body "$BODY" --label "bug"
+            gh issue create --repo "$REPOSITORY" --title "$TITLE" --body "$BODY" 
           fi
 
       - name: Remove temporary evidence
