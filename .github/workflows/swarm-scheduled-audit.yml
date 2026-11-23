@@ -29,6 +29,26 @@ jobs:
           gh issue list --repo "$REPO" --state open --limit 100 --json number,title,url,labels > .audit/issues.json
           gh run list --repo "$REPO" --limit 20 --json name,conclusion,status,url,createdAt > .audit/runs.json
 
+      - name: Verify OpenAI API secret presence
+        id: secret_check
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${OPENAI_API_KEY:-}" ]; then
+            STATUS="CONFIGURED"
+          else
+            STATUS="MISSING"
+          fi
+          printf '%s\n' "$STATUS" > .audit/openai-secret-status.txt
+          {
+            echo "## OpenAI API secret check"
+            echo "- Repository: $GITHUB_REPOSITORY"
+            echo "- OPENAI_API_KEY: $STATUS"
+            echo "- Checked at: $GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
       - name: Generate audit findings
         id: findings
         run: |
@@ -55,7 +75,13 @@ jobs:
           lines.extend(["","## Recent failed CI runs",""])
           for run in failures[:10]:
               lines.append(f"- {run['name']}: {run['url']}")
-          lines.extend(["","## Required engineering checks","","- Authentication and authorization integrity","- Supabase RLS and tenant isolation","- SMRT16 edge security and rate limiting","- WAF and threat detection","- POPIA data protection controls","- Build, tests and deployment stability","- Environment variable and secret hygiene","","This report identifies items requiring engineering review. It does not certify that these controls passed."])
+          secret_status="UNKNOWN"
+          try:
+              with open(".audit/openai-secret-status.txt",encoding="utf-8") as f:
+                  secret_status=f.read().strip()
+          except OSError:
+              pass
+          lines.extend(["","## GitHub Actions secret verification", "", f"- OPENAI_API_KEY: {secret_status}", "", "This checks presence only; the secret value is never printed.", "", "## Required engineering checks","","- Authentication and authorization integrity","- Supabase RLS and tenant isolation","- SMRT16 edge security and rate limiting","- WAF and threat detection","- POPIA data protection controls","- Build, tests and deployment stability","- Environment variable and secret hygiene","","This report identifies items requiring engineering review. It does not certify that these controls passed."])
           with open(".audit/report.md","w",encoding="utf-8") as f:
               f.write("\n".join(lines))
           needed=bool(counts["P0"] or counts["P1"] or failures)
