@@ -17,7 +17,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: swarm-triage-\${{ github.repository }}-\${{ github.event.workflow_run.id || inputs.run_id }}
+  group: swarm-triage-${{ github.repository }}-${{ github.event.workflow_run.id || inputs.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -29,27 +29,32 @@ jobs:
       - name: Resolve source run
         id: source
         env:
-          EVENT_RUN_ID: \${{ github.event.workflow_run.id }}
-          INPUT_RUN_ID: \${{ inputs.run_id }}
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           RUN_ID="$EVENT_RUN_ID"
           if [ -z "$RUN_ID" ]; then RUN_ID="$INPUT_RUN_ID"; fi
           [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "Invalid run ID" >&2; exit 1; }
+          COMMIT_SHA="$(gh run view "$RUN_ID" --repo "$REPOSITORY" --json headSha --jq '.headSha')"
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not resolve source commit" >&2; exit 1; }
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Checkout failing commit for read-only inspection
         uses: actions/checkout@v4
         with:
-          ref: \${{ steps.source.outputs.commit_sha }}
+          ref: ${{ steps.source.outputs.commit_sha }}
           persist-credentials: false
           fetch-depth: 1
 
       - name: Collect failed logs and configuration
         env:
-          GH_TOKEN: \${{ github.token }}
-          RUN_ID: \${{ steps.source.outputs.run_id }}
-          REPOSITORY: \${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.source.outputs.run_id }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           mkdir -p swarm-evidence
@@ -71,15 +76,15 @@ jobs:
           {
             printf 'Repository: %s\n' "$REPOSITORY"
             printf 'Run ID: %s\n' "$RUN_ID"
-            printf 'Commit: %s\n' "\${{ github.event.workflow_run.head_sha || github.sha }}"
-            printf 'Workflow: %s\n' "\${{ github.event.workflow_run.name || 'manual dispatch' }}"
+            printf 'Commit: %s\n' "${{ github.event.workflow_run.head_sha || github.sha }}"
+            printf 'Workflow: %s\n' "${{ github.event.workflow_run.name || 'manual dispatch' }}"
           } > swarm-evidence/metadata.txt
           cat swarm-evidence/metadata.txt swarm-evidence/config.txt swarm-evidence/failed-logs.bounded.txt > swarm-evidence/payload.txt
 
       - name: Generate guarded root-cause analysis
         id: ai
         env:
-          OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
           if [ -z "\${OPENAI_API_KEY:-}" ]; then
@@ -102,11 +107,11 @@ jobs:
 
       - name: Create or update failure-analysis issue
         env:
-          GH_TOKEN: \${{ github.token }}
-          REPOSITORY: \${{ github.repository }}
-          RUN_ID: \${{ steps.source.outputs.run_id }}
-          ANALYSIS: \${{ steps.ai.outputs.analysis }}
-          COMMIT_SHA: \${{ github.event.workflow_run.head_sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ steps.source.outputs.run_id }}
+          ANALYSIS: ${{ steps.ai.outputs.analysis }}
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
           TITLE="[Swarm Triage] Failed workflow run $RUN_ID"
