@@ -1,4 +1,4 @@
-name: Swarm Scheduled Audit
+name: HRIH Swarm Scheduled Audit
 
 on:
   schedule:
@@ -11,64 +11,161 @@ permissions:
   issues: write
 
 concurrency:
-  group: swarm-scheduled-audit-${{ github.repository }}
+  group: hrih-scheduled-audit
   cancel-in-progress: false
 
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - name: Collect open priority issues and recent workflow state
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          gh issue list --repo "$REPOSITORY" --state open --limit 100 --json number,title,labels,url,createdAt > open-issues.json
-          gh run list --repo "$REPOSITORY" --limit 30 --json name,status,conclusion,url,createdAt,headBranch > recent-runs.json
-          jq -n --slurpfile issues open-issues.json --slurpfile runs recent-runs.json '{
-            open_priority_issues: [$issues[0][] | select(any(.labels[]?.name; test("^(P0|P1|P2|P3)$"))) | {number,title,url,labels}],
-            failed_runs: [$runs[0][] | select(.conclusion == "failure") | {name,conclusion,url,createdAt,headBranch}],
-            in_progress_runs: [$runs[0][] | select(.status == "in_progress") | {name,url,headBranch}]
-          }' > audit.json
-          cat audit.json
+    timeout-minutes: 5
 
-      - name: Create one consolidated audit issue when action is needed
+    steps:
+      - name: Collect repository state
         env:
           GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          P0_P1="$(jq '[.open_priority_issues[] | select(any(.labels[]?.name; . == "P0" or . == "P1"))] | length' audit.json)"
-          FAILURES="$(jq '.failed_runs | length' audit.json)"
-          if [ "$P0_P1" -eq 0 ] && [ "$FAILURES" -eq 0 ]; then
-            echo "No open P0/P1 issues or failed workflow runs detected."
+
+          mkdir -p .audit
+
+          gh issue list \
+            --repo "$REPO" \
+            --state open \
+            --limit 100 \
+            --json number,title,url,labels \
+            > .audit/issues.json
+
+          gh run list \
+            --repo "$REPO" \
+            --limit 20 \
+            --json name,conclusion,status,url,createdAt \
+            > .audit/runs.json
+
+      - name: Generate audit findings
+        id: findings
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          with open(".audit/issues.json", encoding="utf-8") as f:
+              issues = json.load(f)
+
+          with open(".audit/runs.json", encoding="utf-8") as f:
+              runs = json.load(f)
+
+          counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+
+          for issue in issues:
+              labels = {
+                  label["name"].upper()
+                  for label in issue.get("labels", [])
+              }
+              for priority in counts:
+                  if priority in labels:
+                      counts[priority] += 1
+
+          failures = [
+              run for run in runs
+              if run.get("conclusion") == "failure"
+          ]
+
+          lines = [
+              "# HRIH Swarm Scheduled Audit",
+              "",
+              f"Repository: {os.environ['GITHUB_REPOSITORY']}",
+              "",
+              "## Open priority issues",
+              ""
+          ]
+
+          for priority, count in counts.items():
+              lines.append(f"- {priority}: {count}")
+
+          lines.extend(["", "## Open issues", ""])
+
+          for issue in issues[:30]:
+              lines.append(
+                  f"- #{issue['number']} "
+                  f"{issue['title']} - {issue['url']}"
+              )
+
+          lines.extend(["", "## Recent failed CI runs", ""])
+
+          for run in failures[:10]:
+              lines.append(
+                  f"- {run['name']}: {run['url']}"
+              )
+
+          lines.extend([
+              "",
+              "## Required engineering checks",
+              "",
+              "- Authentication and authorization integrity",
+              "- Supabase RLS and tenant isolation",
+              "- SMRT16 edge security and rate limiting",
+              "- WAF and threat detection",
+              "- POPIA data protection controls",
+              "- Build, tests and deployment stability",
+              "- Environment variable and secret hygiene",
+              "",
+              "This report identifies items requiring engineering "
+              "review. It does not certify that these controls passed."
+          ])
+
+          with open(".audit/report.md", "w", encoding="utf-8") as f:
+              f.write("\n".join(lines))
+
+          needs_audit = bool(
+              counts["P0"] or counts["P1"] or failures
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"needed={str(needs_audit).lower()}\n")
+          PY
+
+      - name: Create audit issue when needed
+        if: steps.findings.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          EXISTING=$(
+            gh issue list \
+              --repo "$REPO" \
+              --state open \
+              --label swarm-scheduled-audit \
+              --limit 1 \
+              --json number \
+              --jq 'length'
+          )
+
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "An open scheduled audit already exists."
             exit 0
           fi
-          gh label create swarm-scheduled-audit --repo "$REPOSITORY" --color 0E8A16 --force
-          EXISTING="$(gh issue list --repo "$REPOSITORY" --state open --search '"[Swarm Audit] Priority or CI attention required" in:title' --json number --jq '.[0].number // empty')"
-          BODY="$({
-            echo '## Six-hour swarm audit'
-            echo
-            echo "Repository: $REPOSITORY"
-            echo "Audit UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo
-            echo '### Open P0-P3 issues and recent workflow failures'
-            echo '~~~json'
-            cat audit.json
-            echo '~~~'
-            echo
-            echo '### Required engineering checks'
-            echo '- Confirm Supabase RLS is enabled and ownership policies enforce auth.uid() = user_id where applicable.'
-            echo '- Confirm server-side authorization and tenant boundaries are tested.'
-            echo '- Confirm secrets are stored only in GitHub/Vercel/Supabase secret stores and are not committed.'
-            echo '- Confirm dependency, build, lint, and test checks are green.'
-            echo
-            echo 'This report is a signal for engineering review; it does not certify that security checks passed.'
-          })"
-          if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --repo "$REPOSITORY" --body "$BODY"
-          else
-            gh issue create --repo "$REPOSITORY" --title "[Swarm Audit] Priority or CI attention required" --label "swarm-scheduled-audit" --body "$BODY"
-          fi
+
+          gh label create swarm-scheduled-audit \
+            --repo "$REPO" \
+            --color "0E7490" \
+            --description "Consolidated HRIH swarm audit" \
+            2>/dev/null || true
+
+          gh label create p0 \
+            --repo "$REPO" \
+            --color "B60205" \
+            --description "Critical priority" \
+            2>/dev/null || true
+
+          gh issue create \
+            --repo "$REPO" \
+            --title "[Swarm Audit] P0-P3 Engineering Review" \
+            --label "swarm-scheduled-audit" \
+            --body-file .audit/report.md
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf .audit
