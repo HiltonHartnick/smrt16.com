@@ -76,7 +76,7 @@ jobs:
           {
             printf 'Repository: %s\n' "$REPOSITORY"
             printf 'Run ID: %s\n' "$RUN_ID"
-            printf 'Commit: %s\n' "${{ github.event.workflow_run.head_sha || github.sha }}"
+            printf 'Commit: %s\n' "${{ steps.source.outputs.commit_sha }}"
             printf 'Workflow: %s\n' "${{ github.event.workflow_run.name || 'manual dispatch' }}"
           } > swarm-evidence/metadata.txt
           cat swarm-evidence/metadata.txt swarm-evidence/config.txt swarm-evidence/failed-logs.bounded.txt > swarm-evidence/payload.txt
@@ -111,7 +111,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ steps.source.outputs.run_id }}
           ANALYSIS: ${{ steps.ai.outputs.analysis }}
-          COMMIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          COMMIT_SHA: ${{ steps.source.outputs.commit_sha }}
         run: |
           set -euo pipefail
           TITLE="[Swarm Triage] Failed workflow run $RUN_ID"
