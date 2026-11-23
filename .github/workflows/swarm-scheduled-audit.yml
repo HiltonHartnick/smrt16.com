@@ -46,7 +46,8 @@ jobs:
             echo "No open P0/P1 issues or failed workflow runs detected."
             exit 0
           fi
-          EXISTING="$(gh issue list --repo "$REPOSITORY" --state open --label swarm-scheduled-audit --json number --jq '.[0].number // empty')"
+          gh label create swarm-scheduled-audit --repo "$REPOSITORY" --color 0E8A16 --force
+          EXISTING="$(gh issue list --repo "$REPOSITORY" --state open --search '"[Swarm Audit] Priority or CI attention required" in:title' --json number --jq '.[0].number // empty')"
           BODY="$({
             echo '## Six-hour swarm audit'
             echo
